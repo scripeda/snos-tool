@@ -18,69 +18,129 @@ DATABASE_URL = os.environ.get('DATABASE_URL', 'licenses.db')
 
 # Инициализация базы данных
 def init_db():
-    conn = sqlite3.connect(DATABASE_URL)
-    c = conn.cursor()
-    
-    # Таблица лицензий
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS licenses (
-            id TEXT PRIMARY KEY,
-            license_key TEXT UNIQUE NOT NULL,
-            created_at TIMESTAMP NOT NULL,
-            expires_at TIMESTAMP NOT NULL,
-            max_activations INTEGER DEFAULT 1,
-            current_activations INTEGER DEFAULT 0,
-            is_active BOOLEAN DEFAULT 1,
-            notes TEXT,
-            created_by TEXT,
-            source TEXT DEFAULT 'server'
-        )
-    ''')
-    
-    # Таблица активаций
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS activations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            license_key TEXT NOT NULL,
-            hwid TEXT NOT NULL,
-            device_name TEXT,
-            platform TEXT,
-            activation_time TIMESTAMP NOT NULL,
-            ip_address TEXT,
-            user_agent TEXT,
-            FOREIGN KEY (license_key) REFERENCES licenses (license_key)
-        )
-    ''')
-    
-    # Таблица администраторов (для будущего использования)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            api_key TEXT UNIQUE,
-            permissions TEXT DEFAULT 'read,write'
-        )
-    ''')
-    
-    # Таблица статистики
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date DATE NOT NULL,
-            licenses_generated INTEGER DEFAULT 0,
-            licenses_activated INTEGER DEFAULT 0,
-            unique_hwids INTEGER DEFAULT 0
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+    """Инициализирует базу данных и создает таблицы если их нет"""
+    try:
+        print(f"[INIT] Creating database at: {DATABASE_URL}")
+        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        c = conn.cursor()
+        
+        # Таблица лицензий
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS licenses (
+                id TEXT PRIMARY KEY,
+                license_key TEXT UNIQUE NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                max_activations INTEGER DEFAULT 1,
+                current_activations INTEGER DEFAULT 0,
+                is_active BOOLEAN DEFAULT 1,
+                notes TEXT,
+                created_by TEXT,
+                source TEXT DEFAULT 'server'
+            )
+        ''')
+        
+        # Таблица активаций
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS activations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key TEXT NOT NULL,
+                hwid TEXT NOT NULL,
+                device_name TEXT,
+                platform TEXT,
+                activation_time TIMESTAMP NOT NULL,
+                ip_address TEXT,
+                user_agent TEXT,
+                FOREIGN KEY (license_key) REFERENCES licenses (license_key)
+            )
+        ''')
+        
+        # Таблица администраторов (для будущего использования)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS admins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                api_key TEXT UNIQUE,
+                permissions TEXT DEFAULT 'read,write'
+            )
+        ''')
+        
+        # Таблица статистики
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL,
+                licenses_generated INTEGER DEFAULT 0,
+                licenses_activated INTEGER DEFAULT 0,
+                unique_hwids INTEGER DEFAULT 0
+            )
+        ''')
+        
+        # Создаем индекс для быстрого поиска
+        c.execute('CREATE INDEX IF NOT EXISTS idx_license_key ON licenses(license_key)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_activations ON activations(license_key, hwid)')
+        
+        conn.commit()
+        conn.close()
+        print("[INIT] Database tables created successfully")
+        
+        # Создаем тестовую лицензию для проверки
+        create_test_license()
+        
+    except Exception as e:
+        print(f"[ERROR] Database initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+def create_test_license():
+    """Создает тестовую лицензию для проверки"""
+    try:
+        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        c = conn.cursor()
+        
+        # Проверяем, есть ли уже тестовая лицензия
+        c.execute('SELECT * FROM licenses WHERE license_key LIKE ?', ('TEST-%',))
+        if c.fetchone():
+            print("[INIT] Test license already exists")
+            conn.close()
+            return
+        
+        # Создаем тестовую лицензию
+        test_key = "TEST-SNOS-0000-0000-0000-0000-0001"
+        license_id = str(uuid.uuid4())
+        created_at = datetime.now()
+        expires_at = created_at + timedelta(days=365)
+        
+        c.execute('''
+            INSERT INTO licenses (id, license_key, created_at, expires_at, max_activations, notes, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            license_id,
+            test_key,
+            created_at.isoformat(),
+            expires_at.isoformat(),
+            999,  # Много активаций для теста
+            "Test license for debugging",
+            "system"
+        ))
+        
+        conn.commit()
+        conn.close()
+        print(f"[INIT] Created test license: {test_key}")
+        
+    except Exception as e:
+        print(f"[WARNING] Could not create test license: {e}")
 
 def get_db():
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Получает соединение с базой данных"""
+    try:
+        conn = sqlite3.connect(DATABASE_URL, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception as e:
+        print(f"[ERROR] Database connection error: {e}")
+        raise
 
 # Декоратор для проверки API ключа
 def require_api_key(f):
@@ -103,16 +163,18 @@ def log_request(f):
         ip = request.remote_addr
         endpoint = request.path
         method = request.method
-        user_agent = request.headers.get('User-Agent', 'Unknown')
+        user_agent = request.headers.get('User-Agent', 'Unknown')[:50]
         
-        print(f"[{datetime.now()}] {method} {endpoint} - IP: {ip} - UA: {user_agent[:50]}...")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {method} {endpoint} - IP: {ip} - UA: {user_agent}")
         return f(*args, **kwargs)
     return decorated_function
 
 # Вспомогательные функции
 def generate_license_key():
     """Генерирует уникальный лицензионный ключ"""
-    key_base = hashlib.sha256(f"{uuid.uuid4()}{SERVER_SECRET}{datetime.now()}".encode()).hexdigest().upper()
+    key_base = hashlib.sha256(
+        f"{uuid.uuid4()}{SERVER_SECRET}{datetime.now().timestamp()}".encode()
+    ).hexdigest().upper()
     return f"SNOS-{key_base[:4]}-{key_base[4:8]}-{key_base[8:12]}-{key_base[12:16]}-{key_base[16:20]}"
 
 def update_stats(action, license_key=None, hwid=None):
@@ -132,6 +194,7 @@ def update_stats(action, license_key=None, hwid=None):
                 INSERT INTO stats (date, licenses_generated, licenses_activated, unique_hwids)
                 VALUES (?, 0, 0, 0)
             ''', (today,))
+            conn.commit()
         
         if action == 'generate':
             c.execute("UPDATE stats SET licenses_generated = licenses_generated + 1 WHERE date = ?", (today,))
@@ -145,13 +208,14 @@ def update_stats(action, license_key=None, hwid=None):
                     FROM activations 
                     WHERE date(activation_time) = ?
                 ''', (today,))
-                unique_count = c.fetchone()['unique_count']
+                result = c.fetchone()
+                unique_count = result['unique_count'] if result else 0
                 c.execute("UPDATE stats SET unique_hwids = ? WHERE date = ?", (unique_count, today))
         
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Stats update error: {e}")
+        print(f"[WARNING] Stats update error: {e}")
 
 # API Endpoints
 
@@ -164,13 +228,14 @@ def index():
         'status': 'online',
         'endpoints': {
             'GET /api/test': 'Test server connection',
-            'POST /api/generate': 'Generate new license key',
+            'POST /api/generate': 'Generate new license key (requires X-API-Key)',
             'POST /api/activate': 'Activate license',
             'POST /api/validate': 'Validate license',
-            'GET /api/licenses': 'Get all licenses (admin)',
-            'GET /api/stats': 'Get server statistics',
+            'GET /api/licenses': 'Get all licenses (requires X-API-Key)',
+            'GET /api/stats': 'Get server statistics (requires X-API-Key)',
             'GET /api/license/<key>': 'Get license details'
-        }
+        },
+        'test_license': 'TEST-SNOS-0000-0000-0000-0000-0001'
     })
 
 @app.route('/api/test', methods=['GET'])
@@ -181,7 +246,7 @@ def test():
         'message': 'Server is online and responding',
         'server_time': datetime.now().isoformat(),
         'server_version': '2.0.0',
-        'uptime': '24/7'
+        'database_status': 'connected' if os.path.exists(DATABASE_URL) else 'not_found'
     })
 
 @app.route('/api/generate', methods=['POST'])
@@ -213,12 +278,28 @@ def generate_license():
         conn = get_db()
         c = conn.cursor()
         
-        c.execute('''
-            INSERT INTO licenses (id, license_key, created_at, expires_at, max_activations, notes, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (license_id, license_key, created_at, expires_at, max_activations, notes, created_by))
+        try:
+            c.execute('''
+                INSERT INTO licenses (id, license_key, created_at, expires_at, max_activations, notes, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (license_id, license_key, created_at.isoformat(), expires_at.isoformat(), max_activations, notes, created_by))
+            
+            conn.commit()
+            print(f"[GENERATE] New license created: {license_key}")
+            
+        except sqlite3.IntegrityError:
+            # Если ключ уже существует (очень маловероятно), генерируем новый
+            conn.rollback()
+            license_key = generate_license_key()  # Генерируем другой ключ
+            
+            c.execute('''
+                INSERT INTO licenses (id, license_key, created_at, expires_at, max_activations, notes, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (license_id, license_key, created_at.isoformat(), expires_at.isoformat(), max_activations, notes, created_by))
+            
+            conn.commit()
+            print(f"[GENERATE] Regenerated license due to conflict: {license_key}")
         
-        conn.commit()
         conn.close()
         
         # Обновляем статистику
@@ -235,6 +316,9 @@ def generate_license():
         })
         
     except Exception as e:
+        print(f"[ERROR] Generation error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
             'message': f'Server error: {str(e)}',
@@ -250,11 +334,20 @@ def activate_license():
         license_key = data.get('license_key', '').strip()
         hwid = data.get('hwid', '').strip()
         
-        if not license_key or not hwid:
+        print(f"[ACTIVATE] Request: key={license_key}, hwid={hwid}")
+        
+        if not license_key:
             return jsonify({
                 'success': False,
-                'message': 'Missing required fields: license_key and hwid',
-                'error_code': 'MISSING_FIELDS'
+                'message': 'License key is required',
+                'error_code': 'MISSING_KEY'
+            }), 400
+        
+        if not hwid:
+            return jsonify({
+                'success': False,
+                'message': 'HWID is required',
+                'error_code': 'MISSING_HWID'
             }), 400
         
         conn = get_db()
@@ -265,14 +358,19 @@ def activate_license():
         license_data = c.fetchone()
         
         if not license_data:
+            conn.close()
+            print(f"[ACTIVATE] License not found: {license_key}")
             return jsonify({
                 'success': False,
-                'message': 'License key not found',
+                'message': 'License key not found in database',
                 'error_code': 'LICENSE_NOT_FOUND'
             }), 404
         
+        print(f"[ACTIVATE] License found: {dict(license_data)}")
+        
         # Проверяем активна ли лицензия
         if not license_data['is_active']:
+            conn.close()
             return jsonify({
                 'success': False,
                 'message': 'License has been revoked',
@@ -280,8 +378,9 @@ def activate_license():
             }), 400
         
         # Проверяем срок действия
-        expires_at = datetime.fromisoformat(license_data['expires_at'])
+        expires_at = datetime.fromisoformat(license_data['expires_at'].replace('Z', '+00:00'))
         if expires_at < datetime.now():
+            conn.close()
             return jsonify({
                 'success': False,
                 'message': 'License has expired',
@@ -294,6 +393,7 @@ def activate_license():
         activation_count = c.fetchone()['count']
         
         if activation_count >= license_data['max_activations']:
+            conn.close()
             return jsonify({
                 'success': False,
                 'message': f'Maximum activations reached ({license_data["max_activations"]})',
@@ -307,39 +407,55 @@ def activate_license():
         existing_activation = c.fetchone()
         
         if existing_activation:
+            conn.close()
             return jsonify({
                 'success': True,
                 'message': 'License already activated on this device',
                 'already_activated': True,
                 'activation_time': existing_activation['activation_time'],
-                'expires_at': license_data['expires_at']
+                'expires_at': license_data['expires_at'],
+                'license_key': license_key,
+                'hwid': hwid
             })
         
         # Активируем лицензию
         activation_time = datetime.now()
         device_info = data.get('device_info', {})
         
-        c.execute('''
-            INSERT INTO activations (license_key, hwid, device_name, platform, activation_time, ip_address, user_agent)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            license_key,
-            hwid,
-            device_info.get('device_name'),
-            device_info.get('platform'),
-            activation_time,
-            request.remote_addr,
-            request.headers.get('User-Agent')
-        ))
+        try:
+            c.execute('''
+                INSERT INTO activations (license_key, hwid, device_name, platform, activation_time, ip_address, user_agent)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                license_key,
+                hwid,
+                device_info.get('device_name', 'Unknown'),
+                device_info.get('platform', 'Unknown'),
+                activation_time.isoformat(),
+                request.remote_addr,
+                request.headers.get('User-Agent', 'Unknown')[:200]
+            ))
+            
+            # Обновляем счетчик активаций
+            c.execute('''
+                UPDATE licenses 
+                SET current_activations = current_activations + 1 
+                WHERE license_key = ?
+            ''', (license_key,))
+            
+            conn.commit()
+            print(f"[ACTIVATE] License activated successfully: {license_key} for HWID: {hwid}")
+            
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            print(f"[ERROR] Activation database error: {e}")
+            return jsonify({
+                'success': False,
+                'message': f'Database error during activation: {str(e)}',
+                'error_code': 'DATABASE_ERROR'
+            }), 500
         
-        # Обновляем счетчик активаций
-        c.execute('''
-            UPDATE licenses 
-            SET current_activations = current_activations + 1 
-            WHERE license_key = ?
-        ''', (license_key,))
-        
-        conn.commit()
         conn.close()
         
         # Обновляем статистику
@@ -358,10 +474,13 @@ def activate_license():
         })
         
     except Exception as e:
+        print(f"[ERROR] Activation error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'success': False,
-            'message': f'Activation error: {str(e)}',
-            'error_code': 'ACTIVATION_ERROR'
+            'message': f'Internal server error: {str(e)}',
+            'error_code': 'INTERNAL_ERROR'
         }), 500
 
 @app.route('/api/validate', methods=['POST'])
@@ -372,6 +491,8 @@ def validate_license():
         
         license_key = data.get('license_key', '').strip()
         hwid = data.get('hwid', '').strip()
+        
+        print(f"[VALIDATE] Request: key={license_key}, hwid={hwid}")
         
         if not license_key:
             return jsonify({
@@ -388,6 +509,7 @@ def validate_license():
         license_data = c.fetchone()
         
         if not license_data:
+            conn.close()
             return jsonify({
                 'valid': False,
                 'message': 'License key not found',
@@ -396,6 +518,7 @@ def validate_license():
         
         # Проверяем активна ли лицензия
         if not license_data['is_active']:
+            conn.close()
             return jsonify({
                 'valid': False,
                 'message': 'License has been revoked',
@@ -403,8 +526,9 @@ def validate_license():
             })
         
         # Проверяем срок действия
-        expires_at = datetime.fromisoformat(license_data['expires_at'])
+        expires_at = datetime.fromisoformat(license_data['expires_at'].replace('Z', '+00:00'))
         if expires_at < datetime.now():
+            conn.close()
             return jsonify({
                 'valid': False,
                 'message': 'License has expired',
@@ -418,6 +542,7 @@ def validate_license():
             activation = c.fetchone()
             
             if not activation:
+                conn.close()
                 return jsonify({
                     'valid': False,
                     'message': 'License not activated on this device',
@@ -437,6 +562,7 @@ def validate_license():
         })
         
     except Exception as e:
+        print(f"[ERROR] Validation error: {e}")
         return jsonify({
             'valid': False,
             'message': f'Validation error: {str(e)}',
@@ -468,12 +594,8 @@ def get_all_licenses():
         for row in c.fetchall():
             license_data = dict(row)
             
-            # Преобразуем даты
-            license_data['created_at'] = license_data['created_at']
-            license_data['expires_at'] = license_data['expires_at']
-            
             # Статус лицензии
-            expires_at = datetime.fromisoformat(license_data['expires_at'])
+            expires_at = datetime.fromisoformat(license_data['expires_at'].replace('Z', '+00:00'))
             is_expired = expires_at < datetime.now()
             
             license_data['status'] = 'active'
@@ -499,6 +621,7 @@ def get_all_licenses():
         })
         
     except Exception as e:
+        print(f"[ERROR] Get licenses error: {e}")
         return jsonify({
             'success': False,
             'message': f'Error retrieving licenses: {str(e)}'
@@ -535,7 +658,7 @@ def get_license_details(license_key):
         license_dict = dict(license_data)
         
         # Определяем статус
-        expires_at = datetime.fromisoformat(license_dict['expires_at'])
+        expires_at = datetime.fromisoformat(license_dict['expires_at'].replace('Z', '+00:00'))
         is_expired = expires_at < datetime.now()
         
         license_dict['status'] = 'active'
@@ -552,6 +675,7 @@ def get_license_details(license_key):
         })
         
     except Exception as e:
+        print(f"[ERROR] Get license details error: {e}")
         return jsonify({
             'success': False,
             'message': f'Error retrieving license: {str(e)}'
@@ -559,6 +683,7 @@ def get_license_details(license_key):
 
 @app.route('/api/stats', methods=['GET'])
 @require_api_key
+@log_request
 def get_stats():
     try:
         conn = get_db()
@@ -596,22 +721,6 @@ def get_stats():
         
         weekly_stats = [dict(row) for row in c.fetchall()]
         
-        # Самые активные лицензии
-        c.execute('''
-            SELECT 
-                l.license_key,
-                COUNT(a.id) as activation_count,
-                l.created_at,
-                l.expires_at
-            FROM licenses l
-            LEFT JOIN activations a ON l.license_key = a.license_key
-            GROUP BY l.license_key
-            ORDER BY activation_count DESC
-            LIMIT 10
-        ''')
-        
-        top_licenses = [dict(row) for row in c.fetchall()]
-        
         conn.close()
         
         return jsonify({
@@ -624,11 +733,11 @@ def get_stats():
                 'unique_devices': unique_devices
             },
             'weekly_stats': weekly_stats,
-            'top_licenses': top_licenses,
             'server_time': datetime.now().isoformat()
         })
         
     except Exception as e:
+        print(f"[ERROR] Get stats error: {e}")
         return jsonify({
             'success': False,
             'message': f'Error retrieving stats: {str(e)}'
@@ -636,6 +745,7 @@ def get_stats():
 
 @app.route('/api/revoke/<license_key>', methods=['POST'])
 @require_api_key
+@log_request
 def revoke_license(license_key):
     try:
         conn = get_db()
@@ -644,6 +754,7 @@ def revoke_license(license_key):
         # Проверяем существование лицензии
         c.execute('SELECT * FROM licenses WHERE license_key = ?', (license_key,))
         if not c.fetchone():
+            conn.close()
             return jsonify({
                 'success': False,
                 'message': 'License not found'
@@ -654,12 +765,15 @@ def revoke_license(license_key):
         conn.commit()
         conn.close()
         
+        print(f"[REVOKE] License revoked: {license_key}")
+        
         return jsonify({
             'success': True,
             'message': f'License {license_key} has been revoked'
         })
         
     except Exception as e:
+        print(f"[ERROR] Revoke error: {e}")
         return jsonify({
             'success': False,
             'message': f'Error revoking license: {str(e)}'
@@ -667,6 +781,7 @@ def revoke_license(license_key):
 
 @app.route('/api/extend/<license_key>', methods=['POST'])
 @require_api_key
+@log_request
 def extend_license(license_key):
     try:
         data = request.json or {}
@@ -686,13 +801,14 @@ def extend_license(license_key):
         row = c.fetchone()
         
         if not row:
+            conn.close()
             return jsonify({
                 'success': False,
                 'message': 'License not found'
             }), 404
         
         # Продлеваем срок
-        current_expiry = datetime.fromisoformat(row['expires_at'])
+        current_expiry = datetime.fromisoformat(row['expires_at'].replace('Z', '+00:00'))
         new_expiry = current_expiry + timedelta(days=days)
         
         c.execute('''
@@ -704,6 +820,8 @@ def extend_license(license_key):
         conn.commit()
         conn.close()
         
+        print(f"[EXTEND] License extended: {license_key} by {days} days")
+        
         return jsonify({
             'success': True,
             'message': f'License extended by {days} days',
@@ -712,115 +830,10 @@ def extend_license(license_key):
         })
         
     except Exception as e:
+        print(f"[ERROR] Extend error: {e}")
         return jsonify({
             'success': False,
             'message': f'Error extending license: {str(e)}'
-        }), 500
-
-@app.route('/api/search', methods=['GET'])
-@require_api_key
-def search_licenses():
-    try:
-        query = request.args.get('q', '')
-        if not query or len(query) < 3:
-            return jsonify({
-                'success': False,
-                'message': 'Search query must be at least 3 characters'
-            }), 400
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        search_pattern = f'%{query}%'
-        
-        c.execute('''
-            SELECT l.*, COUNT(a.id) as activation_count
-            FROM licenses l
-            LEFT JOIN activations a ON l.license_key = a.license_key
-            WHERE l.license_key LIKE ? 
-               OR l.notes LIKE ? 
-               OR l.created_by LIKE ?
-               OR EXISTS (
-                   SELECT 1 FROM activations a2 
-                   WHERE a2.license_key = l.license_key 
-                   AND a2.hwid LIKE ?
-               )
-            GROUP BY l.id
-            ORDER BY l.created_at DESC
-        ''', (search_pattern, search_pattern, search_pattern, search_pattern))
-        
-        results = [dict(row) for row in c.fetchall()]
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'query': query,
-            'count': len(results),
-            'results': results
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'Search error: {str(e)}'
-        }), 500
-
-@app.route('/api/batch/generate', methods=['POST'])
-@require_api_key
-def batch_generate():
-    try:
-        data = request.json or {}
-        count = int(data.get('count', 10))
-        days_valid = int(data.get('days_valid', 30))
-        max_activations = int(data.get('max_activations', 1))
-        notes = data.get('notes', '')
-        created_by = data.get('created_by', 'batch_generator')
-        
-        if count <= 0 or count > 1000:
-            return jsonify({
-                'success': False,
-                'message': 'Count must be between 1 and 1000'
-            }), 400
-        
-        generated_keys = []
-        
-        for i in range(count):
-            license_key = generate_license_key()
-            license_id = str(uuid.uuid4())
-            created_at = datetime.now()
-            expires_at = created_at + timedelta(days=days_valid)
-            
-            conn = get_db()
-            c = conn.cursor()
-            
-            c.execute('''
-                INSERT INTO licenses (id, license_key, created_at, expires_at, max_activations, notes, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (license_id, license_key, created_at, expires_at, max_activations, notes, created_by))
-            
-            conn.commit()
-            conn.close()
-            
-            generated_keys.append({
-                'license_key': license_key,
-                'license_id': license_id,
-                'expires_at': expires_at.isoformat()
-            })
-            
-            # Обновляем статистику
-            update_stats('generate')
-        
-        return jsonify({
-            'success': True,
-            'message': f'Successfully generated {count} license keys',
-            'count': count,
-            'keys': generated_keys
-        })
-        
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'message': f'Batch generation error: {str(e)}'
         }), 500
 
 # Обработчик ошибок
@@ -840,21 +853,46 @@ def server_error(error):
         'error': str(error)
     }), 500
 
+# Инициализация при запуске
+def initialize_app():
+    """Инициализирует приложение при запуске"""
+    print("=" * 50)
+    print("Snos Tool License Server v2.0.0")
+    print("=" * 50)
+    print(f"Database: {DATABASE_URL}")
+    print(f"Admin API Key: {ADMIN_API_KEY[:10]}...")
+    print(f"Server Secret: {SERVER_SECRET[:10]}...")
+    print("-" * 50)
+    
+    # Инициализируем базу данных
+    init_db()
+    
+    # Проверяем, существует ли файл базы данных
+    if os.path.exists(DATABASE_URL):
+        print(f"✓ Database file exists: {DATABASE_URL}")
+        
+        # Проверяем размер файла
+        size = os.path.getsize(DATABASE_URL)
+        print(f"✓ Database size: {size} bytes")
+    else:
+        print(f"✗ Database file NOT found: {DATABASE_URL}")
+        print("Creating new database...")
+        init_db()
+    
+    print("✓ Server initialization complete")
+    print("=" * 50)
+
 # Запуск приложения
 if __name__ == '__main__':
-    # Инициализация базы данных
-    init_db()
-    print("Database initialized successfully")
+    # Инициализируем приложение
+    initialize_app()
     
-    # Проверка переменных окружения
-    if not ADMIN_API_KEY or ADMIN_API_KEY == 'admin_key_123':
-        print("WARNING: Using default ADMIN_API_KEY. Change this in production!")
-    
-    if not SERVER_SECRET or SERVER_SECRET == 'secret_key_456':
-        print("WARNING: Using default SERVER_SECRET. Change this in production!")
-    
-    print(f"Server starting on port {os.environ.get('PORT', 5000)}")
-    print(f"Admin API Key: {ADMIN_API_KEY[:10]}...")
-    
+    # Запускаем сервер
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=os.environ.get('DEBUG', 'False').lower() == 'true')
+    debug_mode = os.environ.get('DEBUG', 'False').lower() == 'true'
+    
+    print(f"Starting server on port {port} (debug={debug_mode})")
+    print(f"Test endpoint: http://localhost:{port}/api/test")
+    print(f"Test license: TEST-SNOS-0000-0000-0000-0000-0001")
+    
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
