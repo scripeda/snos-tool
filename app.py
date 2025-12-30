@@ -12,8 +12,8 @@ app = Flask(__name__)
 CORS(app)
 
 # Конфигурация
-ADMIN_API_KEY = os.environ.get('ADMIN_API_KEY', 'admin_key_123')
-SERVER_SECRET = os.environ.get('SERVER_SECRET', 'secret_key_456')
+ADMIN_API_KEY = os.environ.get('ADMIN_API_KEY', 'BYDSQ123')
+SERVER_SECRET = os.environ.get('SERVER_SECRET', 'BYDSQ123')
 DATABASE_URL = os.environ.get('DATABASE_URL', 'licenses.db')
 
 # Инициализация базы данных
