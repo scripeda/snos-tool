@@ -3,13 +3,12 @@ services:
     name: snos-license-server
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: ADMIN_API_KEY
         value: BYDSQ123
       - key: SERVER_SECRET
         value: BYDSQ123
-      - key: DATABASE_URL
-        value: licenses.db
       - key: PYTHON_VERSION
         value: 3.9.0
+    healthCheckPath: /api/test
