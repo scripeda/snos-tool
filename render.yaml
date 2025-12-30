@@ -2,19 +2,11 @@ services:
   - type: web
     name: snos-license-server
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn server:app
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: gunicorn server:app  # или gunicorn wsgi:app если создали wsgi.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
-      - key: DATABASE_URL
-        fromDatabase:
-          name: snos-db
-          property: connectionString
-      - key: ADMIN_KEY
-        generateValue: true
     autoDeploy: true
-
-databases:
-  - name: snos-db
-    plan: free
